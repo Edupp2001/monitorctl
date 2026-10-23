@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/example/monitorctl/internal/logger"
+	"github.com/Edupp2001/monitorctl/internal/logger"
 )
 
 func TestNewStdout(t *testing.T) {

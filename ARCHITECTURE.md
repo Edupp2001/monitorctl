@@ -56,7 +56,7 @@ kernel 6.8+). Минимально жизнеспособная: kernel 5.15 LTS
   Linux: **eBPF tracepoints → ringbuf**. Windows (roadmap): FLT callbacks.
 
 Enforcement и observability независимы:
-- Landlock блокирует write → target получает `EPERM`. **Байт не записан** —
+- Landlock блокирует write → target получает `EACCES`. **Байт не записан** —
   это гарантия ядра, не зависит от userspace.
 - eBPF видит `sys_enter_openat`, передаёт событие в userspace; userspace
   логирует и (в `on-violation=kill`) шлёт `cgroup.kill`.
@@ -68,7 +68,7 @@ Enforcement и observability независимы:
 | Guard | Enforcement | Observability | Блокирует | Логирует попытки | Overhead |
 |---|---|---|---|---|---|
 | `warn` | нет | eBPF | нет | да | ~1–5% |
-| `shield` (default) | Landlock + seccomp + MDWE + eBPF-net | eBPF | да (EPERM) | да | ~2–8% |
+| `shield` (default) | Landlock + seccomp + MDWE + eBPF-net | eBPF | да (EACCES) | да | ~2–8% |
 | `airlock` | seccomp-user-notif + eBPF | eBPF | да | каждая попытка с путём | 10–100x |
 
 `airlock` **не реализуется в MVP**. CLI возвращает ошибку `not yet implemented`.
@@ -107,7 +107,7 @@ bind/connect, без UDP и sendmsg). Enforcement — через **eBPF cgroup-h
 | Флаг | Значение | Поведение |
 |---|---|---|
 | `--net=allow` (default) | без ограничений | BPF-программы не загружаются |
-| `--net=block` | запрет наружу | `connect`/`sendto` → `-EPERM`, violation, kill |
+| `--net=block` | запрет наружу | `connect`/`sendto` → `-EACCES`, violation, kill |
 | `--net=whitelist` | только из `--net-allow` | разрешены `(CIDR, port)` из списка |
 | `--net-allow=CIDR:PORT,...` | для `whitelist` | IPv4/IPv6 CIDR + port |
 | `--net-inbound=allow\|block` | default `allow` | слушать входящее |
@@ -142,7 +142,7 @@ BPF-трейспойнты на:
 
 ### `--mem=strict`
 
-1. **seccomp-фильтр** с `SECCOMP_RET_ERRNO(EPERM)` на:
+1. **seccomp-фильтр** с `SECCOMP_RET_ERRNO(EACCES)` на:
    `ptrace`, `process_vm_readv`, `process_vm_writev`, `memfd_create`,
    `userfaultfd`, `perf_event_open`, `pidfd_getfd`, `keyctl`, `add_key`,
    `unshare(CLONE_NEWNS)`.
