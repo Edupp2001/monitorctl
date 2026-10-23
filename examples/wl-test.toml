@@ -1,0 +1,28 @@
+# Whitelist for tests/probes and basic smoke tests under scope=all.
+# The target binary is auto-added to allow_all at runtime.
+
+allow_read = [
+  "/etc/ld.so.cache",
+  "/etc/passwd",
+  "/etc/hostname",
+  "/lib",
+  "/lib64",
+  "/usr/lib",
+  "/usr/share/locale",
+  "/dev/null",
+  "/dev/urandom",
+]
+
+allow_write = [
+  "/tmp",
+]
+
+allow_all = [
+  "/bin/ls",
+  "/usr/bin/ls",
+  "/bin/cat",
+  "/usr/bin/cat",
+  "/bin/sh",
+  "/bin/bash",
+  "/usr/bin/sleep",
+]
