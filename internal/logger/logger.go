@@ -33,5 +33,6 @@ func New(logFilePath string) (*slog.Logger, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open log file %q: %w", logFilePath, err)
 	}
-	return slog.New(slog.NewJSONHandler(f, nil)), func() { _ = f.Close() }, nil
+	log := slog.New(slog.NewJSONHandler(f, nil))
+	return log, func() { CloseOrLog(f, log, "log file") }, nil
 }

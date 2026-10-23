@@ -124,11 +124,11 @@ func (r *Ruleset) addPathBeneath(path string, allowed uint64) error {
 	if err != nil {
 		return fmt.Errorf("open %q: %w", path, err)
 	}
-	defer unix.Close(pfd)
+	defer func() { _ = unix.Close(pfd) }()
 
 	var buf [12]byte
 	binary.LittleEndian.PutUint64(buf[0:8], allowed)
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(pfd))
+	binary.LittleEndian.PutUint32(buf[8:12], uint32(pfd)) // #nosec G115 -- pfd is a non-negative fd from unix.Open
 
 	_, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE,
 		uintptr(r.fd), landlockRulePathBeneath,

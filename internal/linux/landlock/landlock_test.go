@@ -118,7 +118,7 @@ func TestRestrictBlocksWriteOutside(t *testing.T) {
 	if err != nil {
 		t.Skipf("NewRuleset: %v", err)
 	}
-	defer rs.Close()
+	defer func() { _ = rs.Close() }()
 	if len(warns) > 0 {
 		t.Logf("warnings: %v", warns)
 	}
@@ -183,7 +183,7 @@ func TestRestrictScopeWriteAllowsRead(t *testing.T) {
 	if err != nil {
 		t.Skipf("NewRuleset: %v", err)
 	}
-	defer rs.Close()
+	defer func() { _ = rs.Close() }()
 
 	allowPath := filepath.Join(allowDir, "file")
 	denyPath := filepath.Join(denyDir, "should-not-exist")

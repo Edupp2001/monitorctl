@@ -1,20 +1,53 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
   enable:
-    - govet
-    - staticcheck
+    - bodyclose
     - errcheck
+    - gosec
+    - govet
     - ineffassign
-    - unused
     - misspell
+    - revive
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      - path: '_test\.go$'
+        linters:
+          - gosec
+
+      - path: '^internal/linux/cgroup/'
+        text: 'G30[0146]:'
+        linters:
+          - gosec
+
+      - path: '^internal/config/'
+        text: 'G30[0146]:'
+        linters:
+          - gosec
+      - path: '^internal/logger/'
+        text: 'G30[0146]:'
+        linters:
+          - gosec
+
+      - path: '^internal/linux/landlock/'
+        text: 'G103:'
+        linters:
+          - gosec
+
+      - path: '^internal/linux/supervisor/'
+        text: 'G204:'
+        linters:
+          - gosec
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - revive
-    - godot
-    - gosec
-    - bodyclose
 
 issues:
   max-issues-per-linter: 0

@@ -133,7 +133,7 @@ func validateRunOptions(o *runOptions) error {
 		return err
 	}
 	if o.net == "whitelist" && o.netAllow == "" {
-		return errors.New("--net=whitelist requires --net-allow=CIDR:PORT,...")
+		return errors.New("--net=whitelist requires --net-allow=CIDR:PORT")
 	}
 	if o.net != "whitelist" && o.netAllow != "" {
 		return fmt.Errorf("--net-allow is only valid with --net=whitelist (got --net=%s)", o.net)
