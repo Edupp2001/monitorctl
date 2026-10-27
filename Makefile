@@ -20,8 +20,6 @@ vet:
 tidy:
 	$(GO) mod tidy
 
-# build-bpf compiles the C BPF programs and regenerates the bpf2go bindings.
-# Placeholder until Phase 3.
 build-bpf:
 	./scripts/build-bpf.sh
 

@@ -43,7 +43,17 @@ linters:
         text: 'G204:'
         linters:
           - gosec
+      # cmd/monitorctl: cgroup.procs path built from grp.Path, not user input.
+      - path: '^cmd/monitorctl/'
+        text: 'G(304|306):'
+        linters:
+          - gosec
 
+      # supervisor: same (cgroup.procs); pid conversion is safe on Linux.
+      - path: '^internal/linux/supervisor/'
+        text: 'G(115|304|306):'
+        linters:
+          - gosec
 formatters:
   enable:
     - gofmt

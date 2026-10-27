@@ -1,14 +1,9 @@
-# Whitelist for tests/probes and basic smoke tests under scope=all.
-# The target binary is auto-added to allow_all at runtime.
-
 allow_read = [
   "/etc/ld.so.cache",
   "/etc/passwd",
   "/etc/hostname",
-  "/lib",
-  "/lib64",
-  "/usr/lib",
-  "/usr/share/locale",
+  "/etc/nsswitch.conf",
+  "/etc/resolv.conf",
   "/dev/null",
   "/dev/urandom",
 ]
@@ -18,6 +13,11 @@ allow_write = [
 ]
 
 allow_all = [
+  "/lib",
+  "/lib64",
+  "/usr/lib",
+  "/usr/lib64",
+  "/usr/share/locale",
   "/bin/ls",
   "/usr/bin/ls",
   "/bin/cat",

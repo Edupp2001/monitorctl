@@ -438,6 +438,31 @@ allow_read = [
 --whitelist=PATH                       required
 --log-file=PATH                        default: stdout (JSON slog)
 ```
+### eBPF FS observability (kernel-specific flakiness)
+
+On some kernel configurations (observed on kernel 6.17 with clang 18),
+`sys_enter_*` tracepoint programs are successfully loaded and attached
+(`bpftool prog list`, `bpftool link list` confirm 6/6), and `bpftrace` on
+the same tracepoints fires reliably, but our programs do not emit events
+for some target processes. `eBPF seen` debug map shows a varying subset
+of pids; `cg_stats.events_emitted` is 0 in failures.
+
+Confirmed **not caused by**: UID separation (`--drop-privs=no` is also
+affected), cgroup placement (`cgroup_procs` confirms correct placement),
+exit-race (`Drain` ensures `processed == emitted` in successful runs),
+Landlock interference (works independently).
+
+**Impact**: eBPF violation logging is best-effort.
+**Enforcement via Landlock is unaffected and deterministic** — every
+out-of-whitelist access returns `EACCES`, regardless of eBPF state.
+
+**Workarounds for testing**: use `--guard=shield --on-violation=block`
+and inspect Landlock's `EACCES` behaviour; do not rely on eBPF violation
+counts for test assertions.
+
+**Investigation deferred to post-MVP**: try `link.Kprobe` /
+`BPF_PROG_TYPE_TRACING` (fentry), or `bpf_get_current_task_btf()`
+instead of `bpf_get_current_cgroup_id()`.
 
 ## Roadmap (post-MVP)
 

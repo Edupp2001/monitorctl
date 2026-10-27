@@ -12,9 +12,10 @@ import (
 )
 
 // RunChild is invoked from main when os.Args[1] == InternalChildArg. It
-// applies the pre-exec pipeline and then execs the target. On success it
-// never returns; on error it prints the reason and exits with 125 (the
-// pre-exec-failure convention used by systemd/docker).
+// blocks until the parent signals the child's cgroup is ready, then applies
+// the pre-exec pipeline (setrlimit, PR_SET_NO_NEW_PRIVS, Landlock) and
+// execs the target. On success it never returns; on error it prints to
+// stderr and exits with 125 (systemd/docker pre-exec convention).
 //
 // Example (inside main):
 //
@@ -35,22 +36,45 @@ func doChild(args []string) error {
 	target := args[1:]
 
 	guard := os.Getenv("MONITORCTL_GUARD")
-	landlockFD, err := parseLandlockFD(os.Getenv("MONITORCTL_LANDLOCK_FD"))
+	landlockFD, err := parseFD(os.Getenv("MONITORCTL_LANDLOCK_FD"))
+	if err != nil {
+		return err
+	}
+	syncFD, err := parseFD(os.Getenv("MONITORCTL_SYNC_FD"))
 	if err != nil {
 		return err
 	}
 
-	// 1. setrlimit — anti-fork-bomb, anti-fd-exhaustion, anti-VM-exhaustion.
+	// 0. Block until parent confirms cgroup placement.
+	if syncFD >= 0 {
+		var buf [1]byte
+		for {
+			n, rerr := unix.Read(syncFD, buf[:])
+			if rerr == unix.EINTR {
+				continue
+			}
+			if rerr != nil {
+				return fmt.Errorf("sync read: %w", rerr)
+			}
+			if n > 0 {
+				break
+			}
+			return fmt.Errorf("sync pipe closed without signal")
+		}
+		_ = unix.Close(syncFD)
+	}
+
+	// 1. setrlimit
 	if err := setLimits(); err != nil {
 		return err
 	}
 
-	// 2. PR_SET_NO_NEW_PRIVS — mandatory before landlock_restrict_self.
+	// 2. PR_SET_NO_NEW_PRIVS
 	if err := prctl.SetNoNewPrivs(); err != nil {
 		return err
 	}
 
-	// 3. Landlock (only when guard=shield).
+	// 3. Landlock
 	if landlockFD >= 0 {
 		if err := landlock.RestrictSelf(landlockFD); err != nil {
 			return err
@@ -58,10 +82,10 @@ func doChild(args []string) error {
 		_ = unix.Close(landlockFD)
 	}
 
-	// Phase 3.5 will extend: capset(0), setresuid(nobody), seccomp, MDWE.
+	// Phase 3.5 will extend: capset, setresuid, seccomp, MDWE, DUMPABLE.
 	_ = guard
 
-	// 4. Exec target.
+	// 4. exec
 	return unix.Exec(target[0], target, filteredEnviron())
 }
 
@@ -72,7 +96,7 @@ func setLimits() error {
 	}{
 		{unix.RLIMIT_NPROC, 256, 256},
 		{unix.RLIMIT_NOFILE, 1024, 1024},
-		{unix.RLIMIT_AS, 4 << 30, 4 << 30}, // 4 GiB
+		{unix.RLIMIT_AS, 4 << 30, 4 << 30},
 	}
 	for _, l := range limits {
 		rlim := unix.Rlimit{Cur: l.cur, Max: l.max}
@@ -83,13 +107,13 @@ func setLimits() error {
 	return nil
 }
 
-func parseLandlockFD(s string) (int, error) {
+func parseFD(s string) (int, error) {
 	if s == "" {
 		return -1, nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return -1, fmt.Errorf("MONITORCTL_LANDLOCK_FD: %w", err)
+		return -1, fmt.Errorf("fd parse %q: %w", s, err)
 	}
 	return n, nil
 }

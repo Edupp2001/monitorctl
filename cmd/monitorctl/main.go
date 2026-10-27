@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/Edupp2001/monitorctl/internal/linux/ebpf"
 	"github.com/spf13/cobra"
 
 	"github.com/Edupp2001/monitorctl/internal/config"
@@ -179,11 +182,6 @@ func run(ctx context.Context, o *runOptions, target []string) error {
 		log.Warn("guard=warn: no enforcement applied; --scope/--net/--mem have no effect")
 	}
 
-	if o.onViolation != "kill" {
-		log.Warn("--on-violation has no effect until Phase 3 (no eBPF events yet)",
-			"on_violation", o.onViolation)
-	}
-
 	if err := cgroup.OOMScoreAdj(-1000); err != nil {
 		log.Warn("oom_score_adj=-1000 failed (need root/CAP_SYS_RESOURCE)", "error", err.Error())
 	}
@@ -198,13 +196,79 @@ func run(ctx context.Context, o *runOptions, target []string) error {
 		AllowWrite: cfg.AllowWrite,
 		AllowAll:   cfg.AllowAll,
 	}
+	scope, err := policy.ParseScope(o.scope)
+	if err != nil {
+		_ = grp.Close(true)
+		return err
+	}
+
+	var killTriggered atomic.Bool
+	killHandler := func(reason string) {
+		if killTriggered.CompareAndSwap(false, true) {
+			log.Info("killing cgroup", "reason", reason)
+			if err := grp.Kill(); err != nil {
+				log.Warn("cgroup.kill", "error", err.Error())
+			}
+		}
+	}
+
+	onViolation := func(v ebpf.Violation) {
+		lg := log.Warn
+		if v.Action == "warn" {
+			lg = log.Info
+		}
+		lg("violation",
+			"scope", string(v.Scope),
+			"category", v.Category,
+			"action", v.Action,
+			"syscall", v.Syscall,
+			"access", v.AccessType,
+			"path", v.Path,
+			"pid", v.Pid,
+			"tid", v.Tid,
+			"comm", v.Comm,
+			"rule", v.Rule)
+		if v.Action == "kill" && o.onViolation == "kill" {
+			killHandler("violation")
+		}
+	}
+
+	loader, ebpfErr := ebpf.Load(&ebpf.Config{
+		CgroupPath:  grp.Path,
+		Scope:       scope,
+		Whitelist:   pwl,
+		Log:         log,
+		OnViolation: onViolation,
+		OnOverflow: func(dropped uint64) {
+			log.Error("ringbuf overflow: fail-closed kill", "dropped", dropped)
+			killHandler("overflow")
+		},
+	})
+	if ebpfErr != nil {
+		log.Warn("eBPF unavailable, continuing without observability", "error", ebpfErr.Error())
+	} else {
+		defer func() {
+			if err := loader.Close(); err != nil {
+				log.Warn("close eBPF loader", "error", err.Error())
+			}
+		}()
+		if loader != nil {
+			if err := loader.Warmup(500 * time.Millisecond); err != nil {
+				log.Warn("eBPF warmup failed; observability may miss events", "error", err.Error())
+			} else {
+				log.Info("eBPF warmup OK (tracepoint active)")
+			}
+		}
+	}
 
 	log.Info("monitorctl starting",
 		"version", version,
 		"guard", o.guard,
 		"scope", o.scope,
+		"on_violation", o.onViolation,
 		"on_exit", o.onExit,
 		"cgroup", grp.Path,
+		"ebpf", ebpfErr == nil,
 		"target", target[0],
 		"allow_read", len(pwl.AllowRead),
 		"allow_write", len(pwl.AllowWrite),
@@ -215,6 +279,15 @@ func run(ctx context.Context, o *runOptions, target []string) error {
 		Scope:      o.scope,
 		Whitelist:  pwl,
 		CgroupPath: grp.Path,
+		OnCgroupReady: func(actualCgid uint64, pid uint32) error {
+			if loader == nil {
+				return nil
+			}
+			if actualCgid != loader.Cgid() {
+				log.Warn("cgid mismatch", "stat_cgid", loader.Cgid(), "actual_cgid", actualCgid)
+			}
+			return loader.UpdateCgid(actualCgid, pid)
+		},
 	}, target)
 	if err != nil {
 		_ = grp.Kill()
@@ -222,7 +295,29 @@ func run(ctx context.Context, o *runOptions, target []string) error {
 		return err
 	}
 
-	log.Info("target started", "pid", cmd.Process.Pid, "cgroup", grp.Path)
+	// Verify the child actually landed in the target cgroup. clone3(CLONE_INTO_CGROUP)
+	// can silently fall back to plain clone() on older kernels or when Setpgid
+	// interferes; the child then stays in monitorctl's cgroup and BPF's
+	// target_cgroups lookup misses every event.
+	procsPath := filepath.Join(grp.Path, "cgroup.procs")
+	if data, err := os.ReadFile(procsPath); err == nil {
+		procs := strings.TrimSpace(string(data))
+		log.Info("target started", "pid", cmd.Process.Pid, "cgroup", grp.Path, "cgroup_procs", procs)
+		if procs == "" {
+			log.Warn("target NOT in target cgroup: eBPF filter will miss all events; " +
+				"check kernel >= 5.7 and clone3(CLONE_INTO_CGROUP) support")
+			// Fallback: explicitly move the child into the cgroup. There is a
+			// small race window (child may have already done a few syscalls) but
+			// it's better than losing all observability.
+			if err := os.WriteFile(procsPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o644); err != nil {
+				log.Warn("fallback cgroup.procs write failed", "error", err.Error())
+			} else {
+				log.Info("fallback: moved child into target cgroup explicitly")
+			}
+		}
+	} else {
+		log.Info("target started", "pid", cmd.Process.Pid, "cgroup", grp.Path)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -236,23 +331,40 @@ func run(ctx context.Context, o *runOptions, target []string) error {
 	case sig := <-sigCh:
 		log.Info("received signal", "signal", sig.String())
 		if o.onExit == "kill" {
-			if err := grp.Kill(); err != nil {
-				log.Warn("cgroup.kill", "error", err.Error())
-			}
+			killHandler("signal")
 			select {
 			case exitErr = <-exitCh:
 			case <-time.After(5 * time.Second):
 				log.Warn("target did not exit within 5s after cgroup.kill")
 			}
 		}
-		// on-exit=leave: return immediately, target keeps running
-
 	case exitErr = <-exitCh:
-		log.Info("target exited", "status", statusString(exitErr))
-		if o.onExit == "kill" {
-			if err := grp.Kill(); err != nil {
-				log.Warn("cgroup.kill", "error", err.Error())
+		if killTriggered.Load() {
+			log.Info("target killed by monitorctl (violation)")
+		} else {
+			log.Info("target exited", "status", statusString(exitErr))
+		}
+		if loader != nil {
+			loader.Drain(500 * time.Millisecond)
+			if o.onViolation == "block" {
+				seen := loader.DumpSeen()
+				log.Info("eBPF seen (all tracepoint hits)", "count", len(seen))
+				for pid, cgid := range seen {
+					log.Info("seen", "pid", pid, "cgid", cgid)
+				}
 			}
+			if st, err := loader.Stats(); err == nil {
+				log.Info("eBPF stats",
+					"emitted", st.EventsEmitted,
+					"processed", loader.Processed(),
+					"warnings_dropped", st.WarningsDropped,
+					"violations_dropped", st.ViolationsDropped)
+			} else {
+				log.Warn("eBPF stats unavailable", "error", err.Error())
+			}
+		}
+		if o.onExit == "kill" {
+			killHandler("normal-exit")
 		}
 	}
 

@@ -119,6 +119,11 @@ func NewRuleset(scope policy.Scope, wl policy.Whitelist) (*Ruleset, []string, er
 	return rs, warnings, nil
 }
 
+// fileAccessMask is the set of Landlock rights that can be granted to a
+// non-directory path. Directory-only rights (READ_DIR, REMOVE_DIR, MAKE_*,
+// REFER) trigger EINVAL from landlock_add_rule when applied to a file.
+const fileAccessMask = accessExecute | accessWriteFile | accessReadFile
+
 func (r *Ruleset) addPathBeneath(path string, allowed uint64) error {
 	pfd, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -126,15 +131,26 @@ func (r *Ruleset) addPathBeneath(path string, allowed uint64) error {
 	}
 	defer func() { _ = unix.Close(pfd) }()
 
+	var st unix.Stat_t
+	if err := unix.Fstat(pfd, &st); err != nil {
+		return fmt.Errorf("fstat %q: %w", path, err)
+	}
+	if (st.Mode & unix.S_IFMT) != unix.S_IFDIR {
+		allowed &= fileAccessMask
+		if allowed == 0 {
+			return nil // nothing applicable for this path/scope combo
+		}
+	}
+
 	var buf [12]byte
 	binary.LittleEndian.PutUint64(buf[0:8], allowed)
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(pfd)) // #nosec G115 -- pfd is a non-negative fd from unix.Open
+	binary.LittleEndian.PutUint32(buf[8:12], uint32(pfd)) // #nosec G115 -- pfd is a non-negative file descriptor
 
 	_, _, errno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE,
 		uintptr(r.fd), landlockRulePathBeneath,
 		uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0)
 	if errno != 0 {
-		return fmt.Errorf("landlock_add_rule (mask=0x%x): %w", allowed, errno)
+		return fmt.Errorf("landlock_add_rule %q (mask=0x%x): %w", path, allowed, errno)
 	}
 	return nil
 }
