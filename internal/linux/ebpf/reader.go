@@ -146,30 +146,30 @@ func Load(cfg *Config) (*Loader, error) {
 		return nil, fmt.Errorf("put target_cgroups: %w", err)
 	}
 
-	tp := []struct {
-		cat, name string
-		prog      *ebpf.Program
+	kp := []struct {
+		sym  string
+		prog *ebpf.Program
 	}{
-		{"syscalls", "sys_enter_openat", objs.TpOpenat},
-		{"syscalls", "sys_enter_openat2", objs.TpOpenat2},
-		{"syscalls", "sys_enter_open", objs.TpOpen},
-		{"syscalls", "sys_enter_unlinkat", objs.TpUnlinkat},
-		{"syscalls", "sys_enter_renameat2", objs.TpRenameat2},
-		{"syscalls", "sys_enter_execve", objs.TpExecve},
+		{"__x64_sys_openat", objs.TpOpenat},
+		{"__x64_sys_openat2", objs.TpOpenat2},
+		{"__x64_sys_open", objs.TpOpen},
+		{"__x64_sys_unlinkat", objs.TpUnlinkat},
+		{"__x64_sys_renameat2", objs.TpRenameat2},
+		{"__x64_sys_execve", objs.TpExecve},
 	}
 	var links []link.Link
 	var nilProgs []string
-	for _, t := range tp {
+	for _, t := range kp {
 		if t.prog == nil {
-			nilProgs = append(nilProgs, t.cat+"/"+t.name)
+			nilProgs = append(nilProgs, t.sym)
 			continue
 		}
-		lnk, err := link.Tracepoint(t.cat, t.name, t.prog, nil)
+		lnk, err := link.Kprobe(t.sym, t.prog, nil)
 		if err != nil {
 			for _, l := range links {
 				_ = l.Close()
 			}
-			return nil, fmt.Errorf("attach %s/%s: %w", t.cat, t.name, err)
+			return nil, fmt.Errorf("kprobe attach %s: %w", t.sym, err)
 		}
 		links = append(links, lnk)
 	}
@@ -177,15 +177,14 @@ func Load(cfg *Config) (*Loader, error) {
 		for _, l := range links {
 			_ = l.Close()
 		}
-		return nil, fmt.Errorf("BPF programs missing: %v", nilProgs)
+		return nil, fmt.Errorf("kprobe programs missing: %v", nilProgs)
 	}
-	if len(links) != len(tp) {
+	if len(links) != len(kp) {
 		for _, l := range links {
 			_ = l.Close()
 		}
-		return nil, fmt.Errorf("attached %d/%d tracepoints", len(links), len(tp))
+		return nil, fmt.Errorf("attached %d/%d kprobes", len(links), len(kp))
 	}
-
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
 		for _, l := range links {
@@ -457,7 +456,7 @@ func (l *Loader) Drain(timeout time.Duration) {
 	}
 }
 
-// Warmup blocks until the tracepoint infrastructure is confirmed active,
+// Warmup blocks until the kprobe infrastructure is confirmed active,
 // or until timeout. It issues test openat() calls in a loop and polls
 // seen_pids for our own pid. This eliminates the static-key propagation
 // race between link.Tracepoint returning and the syscall_enter tracepoint
@@ -475,7 +474,7 @@ func (l *Loader) Drain(timeout time.Duration) {
 //	    log.Warn("eBPF warmup failed", "error", err.Error())
 //	}
 func (l *Loader) Warmup(timeout time.Duration) error {
-	myPid := uint32(os.Getpid())
+	myPid := uint32(os.Getpid()) // #nosec G115 -- pid_max <= 4194304, always fits in uint32
 	deadline := time.Now().Add(timeout)
 	var lastSeen map[uint32]uint64
 	for time.Now().Before(deadline) {
@@ -489,7 +488,7 @@ func (l *Loader) Warmup(timeout time.Duration) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("warmup timeout after %v: tracepoint did not fire for pid %d; seen_pids has %d entries: %v",
+	return fmt.Errorf("warmup timeout after %v: kprobe did not fire for pid %d; seen_pids has %d entries: %v",
 		timeout, myPid, len(lastSeen), lastSeen)
 }
 

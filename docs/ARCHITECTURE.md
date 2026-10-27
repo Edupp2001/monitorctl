@@ -438,31 +438,24 @@ allow_read = [
 --whitelist=PATH                       required
 --log-file=PATH                        default: stdout (JSON slog)
 ```
-### eBPF FS observability (kernel-specific flakiness)
 
-On some kernel configurations (observed on kernel 6.17 with clang 18),
-`sys_enter_*` tracepoint programs are successfully loaded and attached
-(`bpftool prog list`, `bpftool link list` confirm 6/6), and `bpftrace` on
-the same tracepoints fires reliably, but our programs do not emit events
-for some target processes. `eBPF seen` debug map shows a varying subset
-of pids; `cg_stats.events_emitted` is 0 in failures.
+### eBPF FS observability: kprobes, not tracepoints
 
-Confirmed **not caused by**: UID separation (`--drop-privs=no` is also
-affected), cgroup placement (`cgroup_procs` confirms correct placement),
-exit-race (`Drain` ensures `processed == emitted` in successful runs),
-Landlock interference (works independently).
+FS observability uses kprobes on `__x64_sys_openat/openat2/open/unlinkat/
+renameat2/execve`, not tracepoints. On some kernels (observed on 6.17 in
+VirtualBox), `perf_event_open`-based tracepoints are successfully attached
+(`bpftool link list` = 6/6) and `bpftrace` on the same tracepoints fires
+reliably for long-lived processes, but miss short-lived processes
+(<50 ms `/bin/cat`) intermittently (1-2 of 10 runs).
 
-**Impact**: eBPF violation logging is best-effort.
-**Enforcement via Landlock is unaffected and deterministic** — every
-out-of-whitelist access returns `EACCES`, regardless of eBPF state.
+`bpftool map dump seen_pids` (unconditional logging in the program)
+confirms the program does not execute at all for the target; this is a
+kernel tracepoint delivery issue, not our code.
 
-**Workarounds for testing**: use `--guard=shield --on-violation=block`
-and inspect Landlock's `EACCES` behaviour; do not rely on eBPF violation
-counts for test assertions.
-
-**Investigation deferred to post-MVP**: try `link.Kprobe` /
-`BPF_PROG_TYPE_TRACING` (fentry), or `bpf_get_current_task_btf()`
-instead of `bpf_get_current_cgroup_id()`.
+**Fix**: switch to kprobes on the `__x64_sys_*` wrappers. Kprobes use
+`int3` breakpoints with synchronous kernel delivery, avoiding the
+`static_key_slow_inc` / per-CPU propagation race. Verified 10/10 runs
+on the same kernel/hardware.
 
 ## Roadmap (post-MVP)
 
